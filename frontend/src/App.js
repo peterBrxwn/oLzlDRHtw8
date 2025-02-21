@@ -36,7 +36,7 @@ class App extends Component {
 
     if (note.id) {
       axios
-        .put(`/api/notes/${note.id}/`, note)
+        .patch(`/api/notes/${note.id}/`, note)
         .then((res) => this.refreshList());
       return;
     }
@@ -44,7 +44,7 @@ class App extends Component {
   };
 
   deleteNote = (note) => {
-    axios.delete(`/api/notes/${note.id}/`).then((res) => this.refreshList());
+    axios.delete(`/api/notes/${note.id}/`, { withCredentials: true }).then((res) => this.refreshList());
   };
 
   createNote = () => {

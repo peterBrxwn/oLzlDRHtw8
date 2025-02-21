@@ -1,7 +1,8 @@
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import Optional
+from typing import Annotated, Optional
+from sqlmodel import Field, Session, SQLModel, create_engine, select
 
 app = FastAPI()
 
@@ -15,18 +16,6 @@ app.add_middleware(
     allow_headers=["*"]
 )
 
-
-@app.get("/", tags=["root"])
-async def read_root() -> dict:
-    return {"message": "Test"}
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=origins,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"]
-)
 notes = [
     {
         "id": 1,
@@ -42,57 +31,109 @@ notes = [
     }
 ]
 
-class Note(BaseModel):
-    id: Optional[int] = None
+@app.get("/", tags=["root"])
+async def read_root() -> dict:
+    return {"message": "Test"}
+
+
+class NoteBase(SQLModel):
     title: str
     description: str
-    pinned: bool
-  
-@app.get("/api/notes", tags=["notes"])
-async def get_notes() -> list:
+    pinned: bool = Field(default=False)
+
+
+class Note(NoteBase, table=True):
+    id: int | None = Field(default=None, primary_key=True)
+    title: str
+    description: str
+    pinned: bool = Field(default=False)
+
+
+class NotePublic(NoteBase):
+    id: int | None = Field(default=None, primary_key=True)
+    title: str
+    description: str
+    pinned: bool = Field(default=False)
+
+
+class NoteCreate(NoteBase):
+    title: str
+    description: str
+    pinned: bool = Field(default=False)
+
+
+class NoteUpdate(NoteBase):
+    title: str | None = None
+    description: str | None = None
+    pinned: bool | None = None
+
+
+sqlite_file_name = "database.db"
+sqlite_url = f"sqlite:///{sqlite_file_name}"
+
+connect_args = {"check_same_thread": False}
+engine = create_engine(sqlite_url, connect_args=connect_args)
+
+def create_db_and_tables():
+    SQLModel.metadata.create_all(engine)
+
+def get_session():
+    with Session(engine) as session:
+        yield session
+
+SessionDep = Annotated[Session, Depends(get_session)]
+app = FastAPI()
+
+
+@app.on_event("startup")
+def on_startup():
+    create_db_and_tables()
+
+
+@app.post("/api/notes/", response_model=NotePublic)
+def create_note(note: NoteCreate, session: SessionDep):
+    db_note = Note.model_validate(note)
+    session.add(db_note)
+    session.commit()
+    session.refresh(db_note)
+    return db_note
+
+@app.get("/api/notes/", response_model=list[NotePublic])
+def read_notes(
+    session: SessionDep,
+    offset: int = 0,
+    limit: Annotated[int, Query(le=100)] = 100,
+):
+    notes = session.exec(select(Note).offset(offset).limit(limit)).all()
     return notes
-  
-@app.get("/api/notes/{note_id}", tags=["notes"])
-async def get_note(note_id: str):
-    try:
-        note_id = int(note_id)
-    except ValueError:
-        pass
-    if isinstance(note_id, int):
-        for note in notes:
-            if note["id"] == note_id:
-                return note
+
+
+@app.get("/api/notes/{note_id}", response_model=NotePublic)
+def read_note(note_id: int, session: SessionDep):
+    note = session.get(Note, note_id)
+    if not note:
         raise HTTPException(status_code=404, detail="Note not found")
-    
-    raise HTTPException(status_code=400, detail="Invalid ID")
-  
-@app.post("/api/notes", tags=["notes"])
-async def create_note(note: Note):
-    note_id = notes[-1]["id"] + 1 if notes else 1
-    for existing_note in notes:
-        if existing_note["id"] == note_id:
-            raise HTTPException(status_code=400, detail="Note with this ID already exists")
-    
-    new_note = note.dict()
-    new_note["id"] = note_id  # Assign the generated ID
-    
-    notes.append(new_note)
-    return {"message": "Note added successfully", "note": note}
+    return note
 
-@app.put("/api/notes/{note_id}", tags=["notes"])
-async def update_note(note_id: int, updated_note: Note):
-    for index, note in enumerate(notes):
-        if note["id"] == note_id:
-            notes[index] = updated_note.dict()
-            return {"message": "Note updated successfully", "note": updated_note}
-    
-    raise HTTPException(status_code=404, detail="Note not found")
 
-@app.delete("/api/notes/{note_id}", tags=["notes"])
-async def delete_note(note_id: int):
-    for index, note in enumerate(notes):
-        if note["id"] == note_id:
-            deleted_note = notes.pop(index)
-            return {"message": "Note deleted successfully", "note": deleted_note}
-    
-    raise HTTPException(status_code=404, detail="Note not found")
+@app.patch("/api/notes/{note_id}", response_model=NotePublic)
+def update_note(note_id: int, note: NoteUpdate, session: SessionDep):
+    note_db = session.get(Note, note_id)
+    if not note_db:
+        raise HTTPException(status_code=404, detail="Note not found")
+    note_data = note.model_dump(exclude_unset=True)
+    note_db.sqlmodel_update(note_data)
+    session.add(note_db)
+    session.commit()
+    session.refresh(note_db)
+    return note_db
+
+
+@app.delete("/api/notes/{note_id}")
+def delete_note(note_id: int, session: SessionDep):
+    note = session.get(Note, note_id)
+    if not note:
+        raise HTTPException(status_code=404, detail="Note not found")
+    session.delete(note)
+    session.commit()
+    return {"ok": True}
