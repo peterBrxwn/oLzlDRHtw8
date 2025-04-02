@@ -73,6 +73,7 @@ This demo application showcases a simple web application built with a React fron
 
 ## Project Structure
 
+<pre>
 oLzlDRHtw8/
     ├── README.md
     ├── backend
@@ -103,6 +104,7 @@ oLzlDRHtw8/
             ├── logo.svg
             ├── reportWebVitals.js
             └── setupTests.js
+</pre>
 
 ## Usage
 
